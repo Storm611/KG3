@@ -5,37 +5,20 @@
 extern Model* model;
 
 Vec4f PhongShader::vertex(int iface, int nthvert) {
-    // Получаем UV координаты (возвращает Vec2f)
     Vec2f uv = model->uv(iface, nthvert);
+    varying_uv[nthvert] = uv;
 
-    // ФИКС: Правильно устанавливаем UV в матрицу
-    // mat<3, 2, float> - 3 колонки по 2 значения (u,v)
-    // Устанавливаем для каждой вершины (nthvert) ее UV
-    for (int i = 0; i < 2; i++) {
-        varying_uv[nthvert][i] = uv[i];  // ith компонента UV для nthvert вершины
-    }
-
-    // Получаем нормаль вершины
     Vec3f n = model->normal(iface, nthvert);
-    Vec3f transformed_norm = proj<3>(uniform_MIT * embed<4>(n, 0.f));
+    varying_nrm[nthvert] = proj<3>(uniform_MIT * embed<4>(n, 0.f));
 
-    // Устанавливаем нормаль в матрицу
-    for (int i = 0; i < 3; i++) {
-        varying_nrm[nthvert][i] = transformed_norm[i];
-    }
+    Vec3f v = model->vert(iface, nthvert);
+    Vec4f gl_Vertex = embed<4>(v, 1.f);
 
-    // Получаем позицию вершины
-    Vec3f vert_pos = model->vert(iface, nthvert);
-    Vec4f gl_Vertex = uniform_M * embed<4>(vert_pos, 1.f);
-    Vec3f proj_vertex = proj<3>(gl_Vertex / gl_Vertex[3]);
+    Vec4f clip = Projection * ModelView * gl_Vertex;
+    Vec3f ndc = proj<3>(clip / clip[3]);
+    varying_tri[nthvert] = ndc;
 
-    // Устанавливаем позицию в матрицу
-    for (int i = 0; i < 3; i++) {
-        varying_tri[nthvert][i] = proj_vertex[i];
-    }
-
-    // Преобразуем в экранные координаты
-    return Viewport * Projection * ModelView * gl_Vertex;
+    return Viewport * clip;
 }
 
 bool PhongShader::fragment(Vec3f bar, TGAColor& color) {
@@ -55,32 +38,10 @@ bool PhongShader::fragment(Vec3f bar, TGAColor& color) {
     }
     n_interpolated = n_interpolated.normalize();
 
-    // Получаем нормаль из карты нормалей
-    Vec3f n = n_interpolated;
-
-    if (normalmap && normalmap->get_width() > 0 && normalmap->get_height() > 0) {
-        int tex_width = normalmap->get_width();
-        int tex_height = normalmap->get_height();
-
-        // Нормализуем UV координаты к [0, 1]
-        float u = uv_interpolated.x - floor(uv_interpolated.x);
-        float v = uv_interpolated.y - floor(uv_interpolated.y);
-
-        int tex_x = (int)(u * tex_width);
-        int tex_y = (int)(v * tex_height);
-
-        tex_x = std::max(0, std::min(tex_width - 1, tex_x));
-        tex_y = std::max(0, std::min(tex_height - 1, tex_y));
-
-        TGAColor normal_color = normalmap->get(tex_x, tex_y);
-
-        // Извлекаем нормаль из текстуры
-        n.x = (float)normal_color[2] / 255.f * 2.f - 1.f;  // Red -> X
-        n.y = (float)normal_color[1] / 255.f * 2.f - 1.f;  // Green -> Y
-        n.z = (float)normal_color[0] / 255.f * 2.f - 1.f;  // Blue -> Z
-
-        n = n.normalize();
-    }
+    // ====================
+    // ОТКЛЮЧАЕМ НОРМАЛЬНУЮ КАРТУ
+    // ====================
+    Vec3f n = n_interpolated; // Используем интерполированные нормали, а не из текстуры
 
     // Интерполируем позицию вершины
     Vec3f p(0, 0, 0);
@@ -107,49 +68,27 @@ bool PhongShader::fragment(Vec3f bar, TGAColor& color) {
         spec = powf(NdotH, specular_exponent);
     }
 
-    // Интенсивность блика из карты
-    if (specularmap && specularmap->get_width() > 0 && specularmap->get_height() > 0) {
-        int tex_width = specularmap->get_width();
-        int tex_height = specularmap->get_height();
-
-        float u = uv_interpolated.x - floor(uv_interpolated.x);
-        float v = uv_interpolated.y - floor(uv_interpolated.y);
-
-        int tex_x = (int)(u * tex_width);
-        int tex_y = (int)(v * tex_height);
-        tex_x = std::max(0, std::min(tex_width - 1, tex_x));
-        tex_y = std::max(0, std::min(tex_height - 1, tex_y));
-
-        float spec_intensity = specularmap->get(tex_x, tex_y)[0] / 255.f;
-        spec *= spec_intensity * specular_intensity;
-    }
+    // ====================
+    // ОТКЛЮЧАЕМ СПЕКУЛЯРНУЮ КАРТУ
+    // ====================
+    // Просто используем uniform значение
+    spec *= specular_intensity;
 
     // Окружающая компонента
     Vec3f ambient = ambient_color;
 
-    // Цвет из диффузной текстуры
-    Vec3f diffuse_color(0.8f, 0.8f, 0.8f);
+    // ====================
+    // ОТКЛЮЧАЕМ ДИФФУЗНУЮ КАРТУ
+    // Используем постоянный цвет вместо текстуры
+    // ====================
+    Vec3f diffuse_color(0.8f, 0.8f, 0.8f); // Серый цвет
 
-    if (diffusemap && diffusemap->get_width() > 0 && diffusemap->get_height() > 0) {
-        int tex_width = diffusemap->get_width();
-        int tex_height = diffusemap->get_height();
+    // Вместо этого кода:
+    // if (diffusemap && diffusemap->get_width() > 0 && diffusemap->get_height() > 0) {
+    //     // ... код загрузки из текстуры ...
+    // }
 
-        float u = uv_interpolated.x - floor(uv_interpolated.x);
-        float v = uv_interpolated.y - floor(uv_interpolated.y);
-
-        int tex_x = (int)(u * tex_width);
-        int tex_y = (int)(v * tex_height);
-        tex_x = std::max(0, std::min(tex_width - 1, tex_x));
-        tex_y = std::max(0, std::min(tex_height - 1, tex_y));
-
-        TGAColor tex_color = diffusemap->get(tex_x, tex_y);
-
-        diffuse_color = Vec3f(
-            tex_color[2] / 255.f,  // Blue -> Red
-            tex_color[1] / 255.f,  // Green -> Green
-            tex_color[0] / 255.f   // Red -> Blue
-        );
-    }
+    // Просто используем diffuse_color как есть
 
     // Комбинируем освещение
     Vec3f result_color;
